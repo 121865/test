@@ -1,0 +1,12 @@
+# --- 核心 AI 推論框架 ---
+ultralytics>=8.0.0
+torch
+torchvision
+
+# --- 影像處理與矩陣運算 ---
+# 限制版本以確保與 ZED SDK 4.0/4.1 的二進位檔相容
+numpy<2.0.0
+opencv-python
+
+# --- 其他輔助套件 ---
+requests
