@@ -4,82 +4,67 @@ import cv2
 import socket
 import time
 from datetime import datetime
+import os
 
 def main():
-    # 1. 連線資訊設定
+    # 1. 連線設定
     tx2_ip = "100.73.177.103"
     stream_port = 30000
-    cmd_port = 50005
-    cmd_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    
-    # 2. ZED 相機初始化
     zed = sl.Camera()
     init_params = sl.InitParameters()
     init_params.set_from_stream(tx2_ip, stream_port)
-    init_params.depth_mode = sl.DEPTH_MODE.NONE  
-    init_params.camera_resolution = sl.RESOLUTION.VGA 
+    init_params.camera_resolution = sl.RESOLUTION.VGA # 強制 VGA
     
-    status = zed.open(init_params)
-    if status != sl.ERROR_CODE.SUCCESS:
-        print(f"連線失敗: {status}")
+    if zed.open(init_params) != sl.ERROR_CODE.SUCCESS:
+        print("連線失敗")
         return
 
-    # 3. 影片錄製器設定 (使用 MJPG 編碼，這是 .avi 最穩定的格式)
-    filename = datetime.now().strftime("%Y%m%d_%H%M%S_raw_data.avi")
-    frame_size = (640, 480)
-    fps = 15.0
-    fourcc = cv2.VideoWriter_fourcc(*'MJPG') 
-    video_writer = cv2.VideoWriter(filename, fourcc, fps, frame_size)
+    # 2. 影片錄製設定 (使用最穩定的 XVID + .avi)
+    filename = datetime.now().strftime("%Y%m%d_%H%M%S_raw.avi")
+    fourcc = cv2.VideoWriter_fourcc(*'XVID') 
+    # 這裡務必與 ZED 輸出的 640x480 一致
+    video_writer = cv2.VideoWriter(filename, fourcc, 15.0, (640, 480))
     
-    print(f">>> 錄影已啟動：{filename}")
+    print(f">>> 準備錄影至: {os.path.abspath(filename)}")
 
     try:
         model = YOLO('best.pt') 
         image = sl.Mat()
         runtime = sl.RuntimeParameters()
-        oa_status = "OFF" 
+        frame_count = 0
 
         while True:
             if zed.grab(runtime) == sl.ERROR_CODE.SUCCESS:
                 zed.retrieve_image(image, sl.VIEW.LEFT)
                 
-                # --- 色調修正：BGR 轉換 ---
+                # 取得資料並轉為 BGR
                 raw_rgba = image.get_data()
                 frame_raw = cv2.cvtColor(raw_rgba, cv2.COLOR_BGRA2BGR)
                 
-                # 寫入影片 (無辨識框原始畫面) 
-                video_writer.write(frame_raw)
+                # 檢查影像大小是否為 640x480
+                if frame_raw.shape[1] == 640 and frame_raw.shape[0] == 480:
+                    video_writer.write(frame_raw)
+                    frame_count += 1
                 
-                # YOLO 辨識與顯示
+                # YOLO 辨識
                 results = model.predict(frame_raw, conf=0.25, verbose=False)[0]
                 annotated_frame = results.plot()
                 
-                # 顯示 UI
-                color = (0, 255, 0) if oa_status == "ON" else (0, 0, 255)
-                cv2.putText(annotated_frame, f"Avoidance: {oa_status} | REC", (20, 40), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+                # 在畫面上顯示已錄製幀數，方便妳即時確認有沒有在存檔
+                cv2.putText(annotated_frame, f"REC Frames: {frame_count}", (20, 40), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                 
-                cv2.imshow("Boat Remote Master Control", annotated_frame)
+                cv2.imshow("Master Control", annotated_frame)
                 
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'): # 按 'q' 安全退出 
+            if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
-            elif key == ord('o'):
-                for _ in range(5): cmd_sock.sendto(b"OA_ON", (tx2_ip, cmd_port))
-                oa_status = "ON"
-            elif key == ord('p'):
-                for _ in range(5): cmd_sock.sendto(b"OA_OFF", (tx2_ip, cmd_port))
-                oa_status = "OFF"
-
-    except Exception as e:
-        print(f"發生錯誤: {e}")
     finally:
-        # --- 安全關閉與檔案封口  ---
-        print("正在安全關閉並儲存影片...")
-        video_writer.release() 
+        video_writer.release()
         zed.close()
         cv2.destroyAllWindows()
-        print(f"影片儲存完成: {filename}")
+        print(f"\n錄影結束，總共錄製了 {frame_count} 幀。")
+        if frame_count == 0:
+            print("警告：錄製幀數為 0，請檢查 ZED 解析度設定。")
 
 if __name__ == "__main__":
     main()
