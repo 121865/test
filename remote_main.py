@@ -3,6 +3,8 @@ from ultralytics import YOLO
 import cv2
 import socket
 import time
+from datetime import datetime
+
 def main():
     # 1. 設定 TX2 連線資訊
     tx2_ip = "100.73.177.103"
@@ -18,26 +20,30 @@ def main():
     
     # 設定連線來源為遠端串流
     init_params.set_from_stream(tx2_ip, stream_port)
-    
-    # 優化連線參數 (移除報錯的 open_timeout_msec)
     init_params.sdk_verbose = True
     init_params.depth_mode = sl.DEPTH_MODE.NONE  # 筆電端不運算深度，節省效能
     init_params.camera_resolution = sl.RESOLUTION.VGA
     
     print(f"正在嘗試連線至遠端串流: {tx2_ip}:{stream_port}...")
     
-    # 嘗試開啟相機
     status = zed.open(init_params)
     if status != sl.ERROR_CODE.SUCCESS:
         print(f"\n連線失敗: {status}")
-        print("請確認：")
-        print("1. TX2 端是否已跑起 tx2_native_aa.py 且畫面停在 bBlitMode...")
-        print("2. 筆電 Ping 100.73.177.103 是否穩定 (需在 100ms 內)")
-        print("3. TX2 端是否執行了 sudo ufw disable")
         return
 
-    # 3. 載入 YOLO
-    print("連線成功！正在載入 YOLO 模型...")
+    # 3. 設定影片錄製器 (VideoWriter) - 用於錄製「無框」原始影像
+    # 檔名包含日期時間，避免覆蓋
+    filename = datetime.now().strftime("%Y%m%d_%H%M%S_raw_data.mp4")
+    # ZED VGA 解析度為 640x480
+    frame_size = (640, 480)
+    fps = 15 
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v') 
+    video_writer = cv2.VideoWriter(filename, fourcc, fps, frame_size)
+    
+    print(f">>> 錄影已啟動，原始影像將儲存至: {filename}")
+
+    # 4. 載入 YOLO
+    print("正在載入 YOLO 模型...")
     try:
         model = YOLO('best.pt') 
     except Exception as e:
@@ -50,54 +56,54 @@ def main():
     oa_status = "OFF" 
 
     print("\n操作說明:")
-    print("按 'o' (英文小寫): 開啟避障")
-    print("按 'p' (英文小寫): 關閉避障")
-    print("按 'q' (英文小寫): 退出程式\n")
+    print("按 'o': 開啟避障 | 按 'p': 關閉避障 | 按 'q': 停止錄影並退出\n")
 
     while True:
-        # 抓取影像
         if zed.grab(runtime) == sl.ERROR_CODE.SUCCESS:
+            # 獲取左眼影像
             zed.retrieve_image(image, sl.VIEW.LEFT)
-            frame = image.get_data()
             
-            # 轉換為 BGR (OpenCV 格式)
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGR)
+            # --- 色調修正關鍵步驟 ---
+            # 1. get_data() 拿到的是 RGBA (4通道)
+            raw_rgba = image.get_data()
+            # 2. 轉換為 BGR (OpenCV 標準 3通道)，這能解決色調不正常(如藍色變橘色)的問題
+            frame_raw = cv2.cvtColor(raw_rgba, cv2.COLOR_RGBA2BGR)
             
-            # YOLO 辨識
-            results = model.predict(frame, conf=0.25, verbose=False)[0]
+            # --- 錄影儲存 (存下還沒畫框的原始馬賽克影像) ---
+            video_writer.write(frame_raw)
+            
+            # 3. YOLO 辨識 (在複製品上畫框，不影響存檔)
+            results = model.predict(frame_raw, conf=0.25, verbose=False)[0]
             annotated_frame = results.plot()
             
-            # 顯示避障狀態提示
+            # 顯示 UI 提示
             color = (0, 255, 0) if oa_status == "ON" else (0, 0, 255)
-            cv2.putText(annotated_frame, f"Obstacle Avoidance: {oa_status}", (20, 40), 
+            cv2.putText(annotated_frame, f"Avoidance: {oa_status} | REC", (20, 40), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
             
             cv2.imshow("Boat Remote Master Control", annotated_frame)
             
-        # 監聽鍵盤
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             break
         elif key == ord('o'):
-            # 連發 5 次，確保 TX2 收到
-            for _ in range(3):
+            for _ in range(5): # 增加連發次數確保穩定
                 cmd_sock.sendto(b"OA_ON", (tx2_ip, cmd_port))
-                time.sleep(0.01) # 微小間隔避免阻塞
+                time.sleep(0.01)
             oa_status = "ON"
-            print(">>> 指令已送出：開啟避障 (連發 5 次模式)")
-            
+            print(">>> 指令：開啟避障")
         elif key == ord('p'):
-            # 連發 5 次，確保 TX2 收到
-            for _ in range(3):
+            for _ in range(5):
                 cmd_sock.sendto(b"OA_OFF", (tx2_ip, cmd_port))
                 time.sleep(0.01)
             oa_status = "OFF"
-            print(">>> 指令已送出：關閉避障 (連發 5 次模式)")
+            print(">>> 指令：關閉避障")
 
     # 釋放資源
+    video_writer.release() # 務必 release 否則影片會毀損
     zed.close()
     cv2.destroyAllWindows()
-    print("程式已結束")
+    print(f"\n錄影結束，原始素材已存於 {filename}")
 
 if __name__ == "__main__":
     main()
