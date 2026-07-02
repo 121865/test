@@ -3,6 +3,7 @@ from ultralytics import YOLO
 import cv2
 from datetime import datetime
 from pathlib import Path
+import torch
 
 # =========================
 # 可調參數
@@ -16,11 +17,16 @@ TRACKER_CFG = "bytetrack.yaml"
 
 CONF_THRES = 0.30
 IMGSZ = 640
+DEVICE = 0 if torch.cuda.is_available() else "cpu"
 
 ONLY_SHIP = True
 MIN_BOX_AREA = 0   # 可改成 200 / 300 過濾太小假框
 
-OUTPUT_DIR = Path(r"D:\SeaShips_train\result")
+# 輸出資料夾
+OUTPUT_DIR = BASE_DIR / "results"
+RAW_DIR = OUTPUT_DIR / "raw"
+TRACK_DIR = OUTPUT_DIR / "track"
+SNAP_DIR = OUTPUT_DIR / "snap"
 
 
 def xyxy_to_int(xyxy):
@@ -35,6 +41,9 @@ def make_video_writer(path, w, h, fps=15.0):
 
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+    TRACK_DIR.mkdir(parents=True, exist_ok=True)
+    SNAP_DIR.mkdir(parents=True, exist_ok=True)
 
     zed = sl.Camera()
     init_params = sl.InitParameters()
@@ -61,10 +70,14 @@ def main():
     track_recording = False
 
     frame_count = 0
+    w = h = 0
+    frame_raw = None
+    vis = None
 
     print(">>> 正在等待影像串流...")
     print(f">>> Model: {MODEL_PATH}")
     print(f">>> Tracker: {TRACKER_CFG}")
+    print(f">>> Device: {DEVICE}")
     print(">>> 按鍵功能：")
     print("    q = 離開")
     print("    r = 開始/停止錄製原始影像")
@@ -92,7 +105,7 @@ def main():
                     conf=CONF_THRES,
                     imgsz=IMGSZ,
                     verbose=False,
-                    device=0,
+                    device=DEVICE,
                 )
 
                 vis = frame_raw.copy()
@@ -142,8 +155,11 @@ def main():
                                 2,
                             )
 
-                # 狀態顯示
-                status_text = f"Frames: {frame_count} | {w}x{h} | RAW_REC: {'ON' if raw_recording else 'OFF'} | TRACK_REC: {'ON' if track_recording else 'OFF'}"
+                status_text = (
+                    f"Frames: {frame_count} | {w}x{h} | "
+                    f"RAW_REC: {'ON' if raw_recording else 'OFF'} | "
+                    f"TRACK_REC: {'ON' if track_recording else 'OFF'}"
+                )
                 cv2.putText(
                     vis,
                     status_text,
@@ -171,9 +187,13 @@ def main():
 
             # r: 開/關 raw 錄影
             elif key == ord('r'):
+                if frame_raw is None or w == 0 or h == 0:
+                    print(">>> 尚未取得有效畫面，無法開始錄影")
+                    continue
+
                 if not raw_recording:
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    raw_filename = OUTPUT_DIR / f"{timestamp}_raw_data.avi"
+                    raw_filename = RAW_DIR / f"{timestamp}_raw_data.avi"
                     raw_writer = make_video_writer(raw_filename, w, h, fps=15.0)
                     raw_recording = True
                     print(f">>> 開始錄製原始影像: {raw_filename}")
@@ -186,9 +206,13 @@ def main():
 
             # t: 開/關 track 錄影
             elif key == ord('t'):
+                if vis is None or w == 0 or h == 0:
+                    print(">>> 尚未取得有效畫面，無法開始錄影")
+                    continue
+
                 if not track_recording:
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    track_filename = OUTPUT_DIR / f"{timestamp}_b3_bytetrack.avi"
+                    track_filename = TRACK_DIR / f"{timestamp}_b3_bytetrack.avi"
                     track_writer = make_video_writer(track_filename, w, h, fps=15.0)
                     track_recording = True
                     print(f">>> 開始錄製追蹤影像: {track_filename}")
@@ -201,13 +225,21 @@ def main():
 
             # s: 存單張圖片
             elif key == ord('s'):
+                if frame_raw is None or vis is None:
+                    print(">>> 尚未取得有效畫面，無法儲存")
+                    continue
+
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                raw_img_path = OUTPUT_DIR / f"{timestamp}_raw.jpg"
-                track_img_path = OUTPUT_DIR / f"{timestamp}_track.jpg"
+                raw_img_path = SNAP_DIR / f"{timestamp}_raw.jpg"
+                track_img_path = SNAP_DIR / f"{timestamp}_track.jpg"
 
                 cv2.imwrite(str(raw_img_path), frame_raw)
                 cv2.imwrite(str(track_img_path), vis)
-                print(f">>> 已儲存畫面:\n    RAW   : {raw_img_path}\n    TRACK : {track_img_path}")
+                print(
+                    f">>> 已儲存畫面:\n"
+                    f"    RAW   : {raw_img_path}\n"
+                    f"    TRACK : {track_img_path}"
+                )
 
     finally:
         if raw_writer is not None:
