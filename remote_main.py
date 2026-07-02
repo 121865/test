@@ -10,7 +10,7 @@ from pathlib import Path
 TX2_IP = "100.73.177.103"
 STREAM_PORT = 30000
 
-MODEL_PATH = r"D:\SeaShips_train\runs\SeaShips_yolov10s_B3\weights\best.pt"
+MODEL_PATH = "best.pt"
 TRACKER_CFG = "bytetrack.yaml"
 
 CONF_THRES = 0.30
